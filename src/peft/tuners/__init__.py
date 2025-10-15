@@ -17,6 +17,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .nullspacelora import NullSpaceLoraConfig, NullSpaceLoraModel
 from .adaption_prompt import AdaptionPromptConfig, AdaptionPromptModel
 from .lora import LoraConfig, LoraModel, LoftQConfig
 from .loha import LoHaConfig, LoHaModel

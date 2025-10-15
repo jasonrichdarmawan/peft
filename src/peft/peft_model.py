@@ -38,6 +38,7 @@ from transformers.utils import PushToHubMixin
 from . import __version__
 from .config import PeftConfig
 from .tuners import (
+    NullSpaceLoraModel,
     AdaLoraModel,
     AdaptionPromptModel,
     IA3Model,
@@ -71,6 +72,7 @@ from .utils import (
 
 
 PEFT_TYPE_TO_MODEL_MAPPING = {
+    PeftType.NULLSPACELORA: NullSpaceLoraModel,
     PeftType.LORA: LoraModel,
     PeftType.LOHA: LoHaModel,
     PeftType.LOKR: LoKrModel,

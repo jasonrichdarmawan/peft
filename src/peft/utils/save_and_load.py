@@ -69,7 +69,7 @@ def get_peft_model_state_dict(
     config = model.peft_config[adapter_name]
     if state_dict is None:
         state_dict = model.state_dict()
-    if config.peft_type in (PeftType.LORA, PeftType.ADALORA):
+    if config.peft_type in (PeftType.LORA, PeftType.ADALORA, PeftType.NULLSPACELORA):
         # to_return = lora_state_dict(model, bias=model.peft_config.bias)
         # adapted from `https://github.com/microsoft/LoRA/blob/main/loralib/utils.py`
         # to be used directly with the state dict which is necessary when using DeepSpeed or FSDP
@@ -95,6 +95,9 @@ def get_peft_model_state_dict(
                 rank_pattern = {k.replace(f".{adapter_name}", ""): v for k, v in rank_pattern.items()}
                 config.rank_pattern = rank_pattern
                 to_return = model.resize_state_dict_by_rank_pattern(rank_pattern, to_return, adapter_name)
+        elif config.peft_type == PeftType.NULLSPACELORA:
+            for k, v in model.P_map.items():
+                to_return[f"P_map.{k}"] = v
 
     elif config.peft_type == PeftType.LOHA:
         to_return = {k: state_dict[k] for k in state_dict if "hada_" in k}
@@ -208,6 +211,7 @@ def set_peft_model_state_dict(model, peft_model_state_dict, adapter_name="defaul
         state_dict = peft_model_state_dict
 
     if config.peft_type in (
+        PeftType.NULLSPACELORA,
         PeftType.LORA,
         PeftType.LOHA,
         PeftType.LOKR,
@@ -218,6 +222,7 @@ def set_peft_model_state_dict(model, peft_model_state_dict, adapter_name="defaul
     ):
         peft_model_state_dict = {}
         parameter_prefix = {
+            PeftType.NULLSPACELORA: "lora_",
             PeftType.IA3: "ia3_",
             PeftType.LORA: "lora_",
             PeftType.ADALORA: "lora_",
@@ -241,6 +246,9 @@ def set_peft_model_state_dict(model, peft_model_state_dict, adapter_name="defaul
             rank_pattern = config.rank_pattern
             if rank_pattern is not None:
                 model.resize_modules_by_rank_pattern(rank_pattern, adapter_name)
+        elif config.peft_type == PeftType.NULLSPACELORA:
+            P_map = {k[len("P_map."):]: v for k, v in state_dict.items() if k.startswith("P_map.")}
+            model.set_P_map(P_map)
     elif config.is_prompt_learning or config.peft_type == PeftType.ADAPTION_PROMPT:
         peft_model_state_dict = state_dict
     else:

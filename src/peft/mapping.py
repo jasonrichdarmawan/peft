@@ -30,6 +30,8 @@ from .peft_model import (
     PeftModelForTokenClassification,
 )
 from .tuners import (
+    NullSpaceLoraConfig,
+    NullSpaceLoraModel,
     AdaLoraConfig,
     AdaLoraModel,
     AdaptionPromptConfig,
@@ -67,6 +69,7 @@ MODEL_TYPE_TO_PEFT_MODEL_MAPPING: dict[str, PeftModel] = {
 }
 
 PEFT_TYPE_TO_CONFIG_MAPPING: dict[str, PeftConfig] = {
+    "NULLSPACELORA": NullSpaceLoraConfig,
     "ADAPTION_PROMPT": AdaptionPromptConfig,
     "PROMPT_TUNING": PromptTuningConfig,
     "PREFIX_TUNING": PrefixTuningConfig,
@@ -82,6 +85,7 @@ PEFT_TYPE_TO_CONFIG_MAPPING: dict[str, PeftConfig] = {
 }
 
 PEFT_TYPE_TO_TUNER_MAPPING = {
+    "NULLSPACELORA": NullSpaceLoraModel,
     "LORA": LoraModel,
     "LOHA": LoHaModel,
     "LOKR": LoKrModel,
