@@ -21,67 +21,18 @@ class NullSpaceLoraModel(LoraModel):
     ):
         super().__init__(model=model, config=config, adapter_name=adapter_name)
 
-    def set_P_map(self, P_map: dict[str, torch.Tensor]):
-        self.P_map = P_map
+    def set_lora_P_map(self, lora_P_map: dict[str, torch.Tensor], adapter_name: str):
         # Now inject P into all relevant modules
         for name, module in self.model.named_modules():
-            if hasattr(module, "set_P") and name in P_map:
-                module.set_P(P_map[name])
+            if hasattr(module, "set_lora_P") and name in lora_P_map:
+                module.set_lora_P(lora_P=lora_P_map[name], adapter_name=adapter_name)
 
-    def _create_and_replace(
-        self,
-        lora_config: LoraConfig,
-        adapter_name: str,
-        target: nn.Module,
-        target_name: str,
-        parent: nn.Module,
-        current_key: str,
-    ):
-        if current_key is None:
-            raise ValueError("Current Key shouldn't be `None`")
-
-        # Regexp matching - Find key which matches current target_name in patterns provided
-        pattern_keys = list(chain(lora_config.rank_pattern.keys(), lora_config.alpha_pattern.keys()))
-        target_name_key = next(
-            filter(lambda key: re.match(rf".*\.{key}$", current_key), pattern_keys),
-            current_key,
-        )
-        r = lora_config.rank_pattern.get(target_name_key, lora_config.r)
-        alpha = lora_config.alpha_pattern.get(target_name_key, lora_config.lora_alpha)
-
-        kwargs = {
-            "r": r,
-            "lora_alpha": alpha,
-            "lora_dropout": lora_config.lora_dropout,
-            "fan_in_fan_out": lora_config.fan_in_fan_out,
-            "init_lora_weights": lora_config.init_lora_weights,
-            "use_rslora": lora_config.use_rslora,
-            "use_dora": lora_config.use_dora,
-            "loaded_in_8bit": getattr(self.model, "is_loaded_in_8bit", False),
-            "loaded_in_4bit": getattr(self.model, "is_loaded_in_4bit", False),
-        }
-
-        # quant_method is not implemented yet
-
-        # note: AdaLoraLayer is a subclass of LoraLayer, we need to exclude it
-        from peft.tuners.adalora import AdaLoraLayer
-
-        if isinstance(target, LoraLayer) and not isinstance(target, AdaLoraLayer):
-            target.update_layer(
-                adapter_name,
-                r,
-                lora_alpha=alpha,
-                lora_dropout=lora_config.lora_dropout,
-                init_lora_weights=lora_config.init_lora_weights,
-                use_rslora=lora_config.use_rslora,
-                use_dora=lora_config.use_dora,
-            )
-        else:
-            new_module = self._create_new_module(lora_config, adapter_name, target, **kwargs)
-            if adapter_name != self.active_adapter:
-                # adding an additional adapter: it is not automatically trainable
-                new_module.requires_grad_(False)
-            self._replace_module(parent, target_name, new_module, target)
+    def get_delta_weights(self, adapter: str) -> dict[str, torch.Tensor]:
+        delta_weights = {}
+        for name, module in self.model.named_modules():
+            if isinstance(module, LoraLayer):
+                delta_weights[name] = module.get_delta_weight(adapter)
+        return delta_weights
 
     @staticmethod
     def _create_new_module(lora_config: LoraConfig, adapter_name: str, target: nn.Module, **kwargs):

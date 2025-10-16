@@ -584,3 +584,32 @@ def check_file_exists_on_hf_hub(repo_id: str, filename: str, **kwargs) -> Option
         )
 
     return exists
+
+class BufferDict(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        self.register_buffer(key, value)
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """
+        `nn.Module.load_state_dict` won't create new buffers
+        that didn't exist at init. It only loads into
+        already-registered names.
+        """
+        for k in list(state_dict.keys()):
+            name = k[len(prefix) :]
+            self[name] = state_dict.pop(k)

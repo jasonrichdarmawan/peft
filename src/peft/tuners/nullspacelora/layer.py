@@ -4,11 +4,12 @@ from typing import Union
 
 from transformers.pytorch_utils import Conv1D
 
-from peft.utils.other import transpose
+from peft.utils.other import transpose, BufferDict
 from peft.tuners.lora import Linear, Embedding, Conv2d, LoraConfig
 from peft.tuners.tuners_utils import BaseTunerLayer
 
 import warnings
+
 
 class NullSpaceLinear(Linear):
 
@@ -39,13 +40,13 @@ class NullSpaceLinear(Linear):
             use_dora=use_dora,
             **kwargs,
         )
+        self.lora_P = BufferDict()
 
-    def set_P(self, P: torch.Tensor):
-        self.P = P
-        if self.P.shape[0] != self.in_features or self.P.shape[1] != self.in_features:
-            raise ValueError(
-                f"P matrix shape {self.P.shape} does not match in_features {self.in_features}."
-            )
+    def set_lora_P(self, lora_P: torch.Tensor, adapter_name: str):
+        if lora_P.shape[0] != self.in_features or lora_P.shape[1] != self.in_features:
+            raise ValueError(f"P matrix shape {self.P.shape} does not match in_features {self.in_features}.")
+        # self.register_buffer("lora_P_" + adapter_name, lora_P)
+        self.lora_P[adapter_name] = lora_P
 
     def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         self._check_forward_args(x, *args, **kwargs)
@@ -56,9 +57,7 @@ class NullSpaceLinear(Linear):
                 self._unmerge()
             result = self.base_layer(x, *args, **kwargs)
         elif adapter_names is not None:
-            result = self._mixed_batch_forward(
-                x, *args, adapter_names=adapter_names, **kwargs
-            )
+            result = self._mixed_batch_forward(x, *args, adapter_names=adapter_names, **kwargs)
         elif self.merged:
             result = self.base_layer(x, *args, **kwargs)
         else:
@@ -70,6 +69,7 @@ class NullSpaceLinear(Linear):
                 lora_A = self.lora_A[active_adapter]
                 lora_B = self.lora_B[active_adapter]
                 dropout = self.lora_dropout[active_adapter]
+                lora_P = self.lora_P[active_adapter]
                 scaling = self.scaling[active_adapter]
                 x = x.to(lora_A.weight.dtype)
 
@@ -77,7 +77,7 @@ class NullSpaceLinear(Linear):
                     # P is a projection matrix, so P.T == P
                     # U \Lambda U^T = SVD(K_0 K_0^T)
                     # P = UU^T
-                    result = result + (lora_B(lora_A(dropout(x) @ self.P))) * scaling
+                    result = result + (lora_B(lora_A(dropout(x) @ lora_P))) * scaling
                 else:
                     raise NotImplementedError("DoRa is not implemented yet.")
 
@@ -88,13 +88,14 @@ class NullSpaceLinear(Linear):
     def get_delta_weight(self, adapter: str) -> torch.Tensor:
         weight_A = self.lora_A[adapter].weight
         weight_B = self.lora_B[adapter].weight
+        P = self.lora_P[adapter]
 
         output_tensor = (
-            transpose(weight_B @ weight_A @ self.P, fan_in_fan_out=self.fan_in_fan_out)
-            * self.scaling[adapter]
+            transpose(weight_B @ weight_A @ P, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
         )
 
         return output_tensor
+
 
 def dispatcher_default(
     target: nn.Module,
@@ -113,9 +114,7 @@ def dispatcher_default(
         embedding_kwargs = kwargs.copy()
         embedding_kwargs.pop("fan_in_fan_out", None)
         embedding_kwargs.update(lora_config.loftq_config)
-        new_module = Embedding(
-            base_layer=target, adapter_name=adapter_name, **embedding_kwargs
-        )
+        new_module = Embedding(base_layer=target, adapter_name=adapter_name, **embedding_kwargs)
     elif isinstance(target_base_layer, nn.Conv2d):
         kwargs.update(lora_config.loftq_config)
         new_module = Conv2d(base_layer=target, adapter_name=adapter_name, **kwargs)
@@ -127,14 +126,11 @@ def dispatcher_default(
             )
             kwargs["fan_in_fan_out"] = lora_config.fan_in_fan_out = False
         kwargs.update(lora_config.loftq_config)
-        new_module = NullSpaceLinear(
-            base_layer=target, adapter_name=adapter_name, **kwargs
-        )
+        new_module = NullSpaceLinear(base_layer=target, adapter_name=adapter_name, **kwargs)
     elif isinstance(target_base_layer, Conv1D):
         if not kwargs["fan_in_fan_out"]:
             warnings.warn(
-                "fan_in_fan_out is set to False but the target module is `Conv1D`. "
-                "Setting fan_in_fan_out to True."
+                "fan_in_fan_out is set to False but the target module is `Conv1D`. " "Setting fan_in_fan_out to True."
             )
             kwargs["fan_in_fan_out"] = lora_config.fan_in_fan_out = True
         kwargs.update(lora_config.loftq_config)
