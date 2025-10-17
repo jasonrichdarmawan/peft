@@ -45,7 +45,6 @@ class NullSpaceLinear(Linear):
     def set_lora_P(self, lora_P: torch.Tensor, adapter_name: str):
         if lora_P.shape[0] != self.in_features or lora_P.shape[1] != self.in_features:
             raise ValueError(f"P matrix shape {self.P.shape} does not match in_features {self.in_features}.")
-        # self.register_buffer("lora_P_" + adapter_name, lora_P)
         self.lora_P[adapter_name] = lora_P
 
     def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
