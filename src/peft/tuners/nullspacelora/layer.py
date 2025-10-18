@@ -122,13 +122,13 @@ class NullSpaceLinear(Linear):
 
         return output_tensor
 
-    def get_delta_weight_K_p(self, adapter: str) -> torch.Tensor:
-        delta_weight = self.get_delta_weight(adapter)
-        lora_S = self.lora_S[adapter]
-        if lora_S is None:
-            return torch.zeros((delta_weight.shape[0], delta_weight.shape[0]), device=delta_weight.device, dtype=delta_weight.dtype)
-        delta_K_p = delta_weight @ lora_S @ delta_weight.T
-        return delta_K_p
+    # def get_delta_weight_K_p(self, adapter: str) -> torch.Tensor:
+    #     delta_weight = self.get_delta_weight(adapter)
+    #     lora_S = self.lora_S[adapter]
+    #     if lora_S is None:
+    #         return torch.zeros((delta_weight.shape[0], delta_weight.shape[0]), device=delta_weight.device, dtype=delta_weight.dtype)
+    #     delta_K_p = delta_weight @ lora_S @ delta_weight.T
+    #     return delta_K_p
 
 
 def dispatcher_default(
