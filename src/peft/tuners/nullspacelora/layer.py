@@ -41,15 +41,36 @@ class NullSpaceLinear(Linear):
             **kwargs,
         )
         self.lora_P = BufferDict()
+        # self.lora_S = BufferDict()
+        # self.lora_S_pending = BufferDict()
 
     def set_lora_P(self, lora_P: torch.Tensor, adapter_name: str):
         if lora_P.shape[0] != self.in_features or lora_P.shape[1] != self.in_features:
             raise ValueError(f"P matrix shape {self.P.shape} does not match in_features {self.in_features}.")
         self.lora_P[adapter_name] = lora_P
 
+    # def update_lora_S(self, lora_S: torch.Tensor, adapter_name: str):
+    #     if adapter_name not in self.lora_S_pending:
+    #         if lora_S.shape[0] != self.in_features or lora_S.shape[1] != self.in_features:
+    #             raise ValueError(f"S matrix shape {lora_S.shape} does not match in_features {self.in_features}.")
+    #         self.lora_S_pending[adapter_name] = lora_S.clone().detach()
+    #     else:
+    #         self.lora_S_pending[adapter_name] += lora_S
+    
+    # def merge_lora_S(self, adapter_name: str):
+    #     if adapter_name not in self.lora_S_pending:
+    #         raise ValueError(f"No pending S matrix to merge for adapter {adapter_name}.")
+    #     if adapter_name not in self.lora_S:
+    #         self.lora_S[adapter_name] = self.lora_S_pending[adapter_name]
+    #     else:
+    #         self.lora_S[adapter_name] += self.lora_S_pending[adapter_name]
+    #     del self.lora_S_pending[adapter_name]
+
     def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         self._check_forward_args(x, *args, **kwargs)
         adapter_names = kwargs.pop("adapter_names", None)
+
+        # lora_K_p_attention_mask = kwargs.pop("lora_K_p_attention_mask", None)
 
         if self.disable_adapters:
             if self.merged:
@@ -72,6 +93,14 @@ class NullSpaceLinear(Linear):
                 scaling = self.scaling[active_adapter]
                 x = x.to(lora_A.weight.dtype)
 
+                # if lora_K_p_attention_mask is not None:
+                #     with torch.no_grad():
+                #         flat_x = x.flatten(start_dim=0, end_dim=1)  # (B*S, F)
+                #         attended_tokens = lora_K_p_attention_mask.flatten().nonzero()[:, 0].to(flat_x.device)
+                #         flat_x = flat_x[attended_tokens, :]
+                #         K_pK_p_new = flat_x.T @ flat_x
+                #         self.update_lora_S(lora_S=K_pK_p_new, adapter_name=active_adapter)
+
                 if not self.use_dora[active_adapter]:
                     # P is a projection matrix, so P.T == P
                     # U \Lambda U^T = SVD(K_0 K_0^T)
@@ -89,11 +118,17 @@ class NullSpaceLinear(Linear):
         weight_B = self.lora_B[adapter].weight
         P = self.lora_P[adapter]
 
-        output_tensor = (
-            transpose(weight_B @ weight_A @ P, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
-        )
+        output_tensor = transpose(weight_B @ weight_A @ P, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
 
         return output_tensor
+
+    def get_delta_weight_K_p(self, adapter: str) -> torch.Tensor:
+        delta_weight = self.get_delta_weight(adapter)
+        lora_S = self.lora_S[adapter]
+        if lora_S is None:
+            return torch.zeros((delta_weight.shape[0], delta_weight.shape[0]), device=delta_weight.device, dtype=delta_weight.dtype)
+        delta_K_p = delta_weight @ lora_S @ delta_weight.T
+        return delta_K_p
 
 
 def dispatcher_default(

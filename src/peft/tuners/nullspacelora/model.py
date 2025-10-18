@@ -2,14 +2,20 @@ import torch
 import torch.nn as nn
 
 from peft.tuners.lora import LoraModel, LoraLayer, LoraConfig
+from peft.tuners.lora.model import _adapter_names_pre_forward_hook
 from peft.config import PeftConfig
 
 from transformers import PreTrainedModel
 
-from itertools import chain
-import re
+from contextlib import contextmanager
+from functools import partial
 
 from .layer import dispatcher_default
+
+
+# def _lora_K_p_attention_mask_pre_forward_hook(module, args, kwargs, lora_K_p_attention_mask: torch.Tensor):
+#     kwargs["lora_K_p_attention_mask"] = lora_K_p_attention_mask
+#     return args, kwargs
 
 
 class NullSpaceLoraModel(LoraModel):
@@ -31,8 +37,20 @@ class NullSpaceLoraModel(LoraModel):
         delta_weights = {}
         for name, module in self.model.named_modules():
             if isinstance(module, LoraLayer):
-                delta_weights[name] = module.get_delta_weight(adapter)
+                delta_weights[name] = module.get_delta_weight(adapter=adapter)
         return delta_weights
+
+    # def merge_lora_S(self, adapter: str):
+    #     for name, module in self.model.named_modules():
+    #         if isinstance(module, LoraLayer):
+    #             module.merge_lora_S(adapter_name=adapter)
+
+    # def get_delta_weights_K_p(self, adapter: str) -> dict[str, torch.Tensor]:
+    #     delta_weights_K_p = {}
+    #     for name, module in self.model.named_modules():
+    #         if isinstance(module, LoraLayer):
+    #             delta_weights_K_p[name] = module.get_delta_weight_K_p(adapter=adapter)
+    #     return delta_weights_K_p
 
     @staticmethod
     def _create_new_module(lora_config: LoraConfig, adapter_name: str, target: nn.Module, **kwargs):
@@ -58,3 +76,37 @@ class NullSpaceLoraModel(LoraModel):
             )
 
         return new_module
+
+    # @contextmanager
+    # def _enable_peft_forward_hooks(self, *args, **kwargs):
+    #     # If adapter_names is passed as an argument, we inject it into the forward arguments.
+    #     adapter_names = kwargs.pop("adapter_names", None)
+
+    #     lora_K_p_attention_mask = kwargs.pop("lora_K_p_attention_mask", None)
+
+    #     if adapter_names is None and lora_K_p_attention_mask is None:
+    #         # nothing to do
+    #         yield
+    #         return
+
+    #     if adapter_names is not None and self.training:
+    #         raise ValueError("Cannot pass `adapter_names` when the model is in training mode.")
+
+    #     hook_handles = []
+    #     for module in self.modules():
+    #         if isinstance(module, LoraLayer):
+    #             if adapter_names is not None:
+    #                 pre_forward = partial(_adapter_names_pre_forward_hook, adapter_names=adapter_names)
+    #                 handle = module.register_forward_pre_hook(pre_forward, with_kwargs=True)
+    #                 hook_handles.append(handle)
+    #             if lora_K_p_attention_mask is not None:
+    #                 pre_forward = partial(
+    #                     _lora_K_p_attention_mask_pre_forward_hook, lora_K_p_attention_mask=lora_K_p_attention_mask
+    #                 )
+    #                 handle = module.register_forward_pre_hook(pre_forward, with_kwargs=True)
+    #                 hook_handles.append(handle)
+
+    #     yield
+
+    #     for handle in hook_handles:
+    #         handle.remove()

@@ -590,10 +590,22 @@ class BufferDict(torch.nn.Module):
         super().__init__()
 
     def __getitem__(self, key):
-        return getattr(self, key)
+        return getattr(self, key, None)
 
     def __setitem__(self, key, value):
         self.register_buffer(key, value)
+
+    def __delitem__(self, key):
+        delattr(self, key)
+
+    def __contains__(self, key):
+        return hasattr(self, key)
+
+    def __iter__(self):
+        return iter(self._buffers)
+
+    def __len__(self):
+        return len(self._buffers)
 
     def _load_from_state_dict(
         self,
