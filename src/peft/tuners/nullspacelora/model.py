@@ -27,11 +27,29 @@ class NullSpaceLoraModel(LoraModel):
     ):
         super().__init__(model=model, config=config, adapter_name=adapter_name)
 
-    def set_lora_P_map(self, lora_P_map: dict[str, torch.Tensor], adapter_name: str):
-        # Now inject P into all relevant modules
+    def set_lora_second_moment_map(self, second_moment_map: dict[str, torch.Tensor], adapter_name: str):
+        # Now inject second moment into all relevant modules
         for name, module in self.model.named_modules():
-            if hasattr(module, "set_lora_P") and name in lora_P_map:
-                module.set_lora_P(lora_P=lora_P_map[name], adapter_name=adapter_name)
+            if hasattr(module, "set_lora_second_moment") and name in second_moment_map:
+                module.set_lora_second_moment(second_moment=second_moment_map[name], adapter_name=adapter_name)
+
+    def set_lora_S_KpKp_map(self, S_KpKp_map: dict[str, torch.Tensor], S_count_map: dict[str, int], adapter_name: str):
+        # Now inject S_KpKp into all relevant modules
+        for name, module in self.model.named_modules():
+            if hasattr(module, "lora_S_KpKp"):
+                module.set_lora_S_KpKp(S_KpKp=S_KpKp_map.get(name, None), S_count=S_count_map.get(name, 1), adapter_name=adapter_name)
+
+    def set_lora_S_KpVp_map(self, S_KpVp_map: dict[str, torch.Tensor], S_count_map: dict[str, int], adapter_name: str):
+        # Now inject S_KpVp into all relevant modules
+        for name, module in self.model.named_modules():
+            if hasattr(module, "lora_S_KpVp"):
+                module.set_lora_S_KpVp(S_KpVp=S_KpVp_map.get(name, None), S_count=S_count_map.get(name, 1), adapter_name=adapter_name)
+
+    def set_lora_S_VpVp_map(self, S_VpVp_map: dict[str, torch.Tensor], S_count_map: dict[str, int], adapter_name: str):
+        # Now inject S_VpVp into all relevant modules
+        for name, module in self.model.named_modules():
+            if hasattr(module, "lora_S_VpVp"):
+                module.set_lora_S_VpVp(S_VpVp=S_VpVp_map.get(name, None), S_count=S_count_map.get(name, 1), adapter_name=adapter_name)
 
     def get_delta_weights(self, adapter: str) -> dict[str, torch.Tensor]:
         delta_weights = {}
@@ -40,17 +58,19 @@ class NullSpaceLoraModel(LoraModel):
                 delta_weights[name] = module.get_delta_weight(adapter=adapter)
         return delta_weights
 
-    # def merge_lora_S(self, adapter: str):
-    #     for name, module in self.model.named_modules():
-    #         if isinstance(module, LoraLayer):
-    #             module.merge_lora_S(adapter_name=adapter)
+    def get_delta_KpKp(self, adapter: str) -> dict[str, torch.Tensor]:
+        delta_KpKp = {}
+        for name, module in self.model.named_modules():
+            if isinstance(module, LoraLayer):
+                delta_KpKp[name] = module.get_delta_KpKp(adapter=adapter)
+        return delta_KpKp
 
-    # def get_delta_weights_K_p(self, adapter: str) -> dict[str, torch.Tensor]:
-    #     delta_weights_K_p = {}
-    #     for name, module in self.model.named_modules():
-    #         if isinstance(module, LoraLayer):
-    #             delta_weights_K_p[name] = module.get_delta_weight_K_p(adapter=adapter)
-    #     return delta_weights_K_p
+    def get_trace_KpKp_VpVp(self, adapter: str) -> dict[str, torch.Tensor]:
+        trace_KpKp_VpVp = {}
+        for name, module in self.model.named_modules():
+            if isinstance(module, LoraLayer):
+                trace_KpKp_VpVp[name] = module.get_trace_KpKp_VpVp(adapter=adapter)
+        return trace_KpKp_VpVp
 
     @staticmethod
     def _create_new_module(lora_config: LoraConfig, adapter_name: str, target: nn.Module, **kwargs):

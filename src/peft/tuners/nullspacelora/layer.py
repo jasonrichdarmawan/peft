@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Union
+from typing import Union, Any
 
 from transformers.pytorch_utils import Conv1D
 
@@ -25,6 +25,7 @@ class NullSpaceLinear(Linear):
         init_lora_weights: Union[bool, str] = True,
         use_rslora: bool = False,
         use_dora: bool = False,
+        nullspace_threshold: float = 2e-2,
         **kwargs,
     ):
         super().__init__(
@@ -40,31 +41,73 @@ class NullSpaceLinear(Linear):
             use_dora=use_dora,
             **kwargs,
         )
+        self.lora_second_moment = BufferDict()
+        self.nullspace_threshold = nullspace_threshold
         self.lora_P = BufferDict()
-        # self.lora_S = BufferDict()
-        # self.lora_S_pending = BufferDict()
+        self.lora_S_KpKp = BufferDict()
+        self.lora_S_KpVp = BufferDict()
+        self.lora_S_VpVp = BufferDict()
 
-    def set_lora_P(self, lora_P: torch.Tensor, adapter_name: str):
-        if lora_P.shape[0] != self.in_features or lora_P.shape[1] != self.in_features:
-            raise ValueError(f"P matrix shape {self.P.shape} does not match in_features {self.in_features}.")
+    def set_lora_second_moment(self, second_moment: dict[str, Any], adapter_name: str):
+        self.lora_second_moment[f"{adapter_name}_mom2"] = second_moment["mom2"]
+        self.lora_second_moment[f"{adapter_name}_count"] = torch.tensor(
+            second_moment["count"], dtype=torch.long, device=second_moment["mom2"].device
+        )
+        self.set_lora_P_from_second_moment(adapter_name=adapter_name)
+
+    def set_lora_P_from_second_moment(self, adapter_name: str):
+        mom2 = self.lora_second_moment[f"{adapter_name}_mom2"].to(self.lora_A[adapter_name].weight.device)
+        count = self.lora_second_moment[f"{adapter_name}_count"].to(self.lora_A[adapter_name].weight.device)
+        moment = mom2 / count
+        eigenvalues, eigenvectors = torch.linalg.eigh(moment)
+        small_eigenvalues_indices = (eigenvalues < self.nullspace_threshold).nonzero(as_tuple=True)[0]
+        projection = eigenvectors[:, small_eigenvalues_indices] @ eigenvectors[:, small_eigenvalues_indices].T
+        self._set_lora_P(projection, adapter_name)
+
+    def _set_lora_P(self, lora_P: torch.Tensor, adapter_name: str):
+        if lora_P.shape[0] != self.out_features or lora_P.shape[1] != self.out_features:
+            raise ValueError(f"P matrix shape {self.lora_P.shape} does not match out_features {self.out_features}.")
         self.lora_P[adapter_name] = lora_P
 
-    # def update_lora_S(self, lora_S: torch.Tensor, adapter_name: str):
-    #     if adapter_name not in self.lora_S_pending:
-    #         if lora_S.shape[0] != self.in_features or lora_S.shape[1] != self.in_features:
-    #             raise ValueError(f"S matrix shape {lora_S.shape} does not match in_features {self.in_features}.")
-    #         self.lora_S_pending[adapter_name] = lora_S.clone().detach()
-    #     else:
-    #         self.lora_S_pending[adapter_name] += lora_S
-    
-    # def merge_lora_S(self, adapter_name: str):
-    #     if adapter_name not in self.lora_S_pending:
-    #         raise ValueError(f"No pending S matrix to merge for adapter {adapter_name}.")
-    #     if adapter_name not in self.lora_S:
-    #         self.lora_S[adapter_name] = self.lora_S_pending[adapter_name]
-    #     else:
-    #         self.lora_S[adapter_name] += self.lora_S_pending[adapter_name]
-    #     del self.lora_S_pending[adapter_name]
+    def set_lora_S_KpKp(self, S_KpKp: torch.Tensor, S_count: int, adapter_name: str):
+        if S_KpKp == None:
+            self.lora_S_KpKp[f"{adapter_name}_S_KpKp"] = torch.zeros(
+                self.in_features, self.in_features, device=self.lora_A[adapter_name].weight.device
+            )
+            self.lora_S_KpKp[f"{adapter_name}_S_count"] = torch.tensor(1, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+        else:
+            if S_KpKp.shape[0] != self.in_features or S_KpKp.shape[1] != self.in_features:
+                raise ValueError(f"S_KpKp matrix shape {S_KpKp.shape} does not match in_features {self.in_features}.")
+            self.lora_S_KpKp[f"{adapter_name}_S_KpKp"] = (S_KpKp / S_count).to(self.lora_A[adapter_name].weight.device)
+            self.lora_S_KpKp[f"{adapter_name}_S_count"] = torch.tensor(S_count, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+
+    def set_lora_S_KpVp(self, S_KpVp: torch.Tensor, S_count: int, adapter_name: str):
+        if S_KpVp == None:
+            self.lora_S_KpVp[f"{adapter_name}_S_KpVp"] = torch.zeros(
+                self.in_features, self.out_features, device=self.lora_A[adapter_name].weight.device
+            )
+            self.lora_S_KpVp[f"{adapter_name}_S_count"] = torch.tensor(1, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+        else:
+            if S_KpVp.shape[0] != self.in_features or S_KpVp.shape[1] != self.out_features:
+                raise ValueError(
+                    f"S_KpVp matrix shape {S_KpVp.shape} does not match in_features {self.in_features} and out_features {self.out_features}."
+                )
+            self.lora_S_KpVp[f"{adapter_name}_S_KpVp"] = (S_KpVp / S_count).to(self.lora_A[adapter_name].weight.device)
+            self.lora_S_KpVp[f"{adapter_name}_S_count"] = torch.tensor(S_count, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+
+    def set_lora_S_VpVp(self, S_VpVp: torch.Tensor, S_count: int, adapter_name: str):
+        if S_VpVp == None:
+            self.lora_S_VpVp[f"{adapter_name}_S_VpVp"] = torch.zeros(
+                self.out_features, self.out_features, device=self.lora_A[adapter_name].weight.device
+            )
+            self.lora_S_VpVp[f"{adapter_name}_S_count"] = torch.tensor(1, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+        else:
+            if S_VpVp.shape[0] != self.out_features or S_VpVp.shape[1] != self.out_features:
+                raise ValueError(
+                    f"S_VpVp matrix shape {S_VpVp.shape} does not match out_features {self.out_features}."
+                )
+            self.lora_S_VpVp[f"{adapter_name}_S_VpVp"] = (S_VpVp / S_count).to(self.lora_A[adapter_name].weight.device)
+            self.lora_S_VpVp[f"{adapter_name}_S_count"] = torch.tensor(S_count, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
 
     def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         self._check_forward_args(x, *args, **kwargs)
@@ -93,19 +136,11 @@ class NullSpaceLinear(Linear):
                 scaling = self.scaling[active_adapter]
                 x = x.to(lora_A.weight.dtype)
 
-                # if lora_K_p_attention_mask is not None:
-                #     with torch.no_grad():
-                #         flat_x = x.flatten(start_dim=0, end_dim=1)  # (B*S, F)
-                #         attended_tokens = lora_K_p_attention_mask.flatten().nonzero()[:, 0].to(flat_x.device)
-                #         flat_x = flat_x[attended_tokens, :]
-                #         K_pK_p_new = flat_x.T @ flat_x
-                #         self.update_lora_S(lora_S=K_pK_p_new, adapter_name=active_adapter)
-
                 if not self.use_dora[active_adapter]:
-                    # P is a projection matrix, so P.T == P
                     # U \Lambda U^T = SVD(K_0 K_0^T)
                     # P = UU^T
-                    result = result + (lora_B(lora_A(dropout(x) @ lora_P))) * scaling
+                    # So, P^T = P
+                    result = result + (lora_B(lora_A(dropout(x))) @ lora_P) * scaling
                 else:
                     raise NotImplementedError("DoRa is not implemented yet.")
 
@@ -118,17 +153,24 @@ class NullSpaceLinear(Linear):
         weight_B = self.lora_B[adapter].weight
         P = self.lora_P[adapter]
 
-        output_tensor = transpose(weight_B @ weight_A @ P, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
+        output_tensor = transpose(P @ weight_B @ weight_A, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
 
         return output_tensor
 
-    # def get_delta_weight_K_p(self, adapter: str) -> torch.Tensor:
-    #     delta_weight = self.get_delta_weight(adapter)
-    #     lora_S = self.lora_S[adapter]
-    #     if lora_S is None:
-    #         return torch.zeros((delta_weight.shape[0], delta_weight.shape[0]), device=delta_weight.device, dtype=delta_weight.dtype)
-    #     delta_K_p = delta_weight @ lora_S @ delta_weight.T
-    #     return delta_K_p
+    def get_delta_KpKp(self, adapter: str) -> torch.Tensor:
+        delta_weight = self.get_delta_weight(adapter)
+        lora_S_KpKp = self.lora_S_KpKp[f"{adapter}_S_KpKp"]
+        delta_KpKp = delta_weight @ lora_S_KpKp @ delta_weight.T
+        return delta_KpKp
+
+    def get_trace_KpKp_VpVp(self, adapter: str) -> torch.Tensor:
+        delta_weight = self.get_delta_weight(adapter)
+        lora_S_KpKp = self.lora_S_KpKp[f"{adapter}_S_KpKp"]
+        lora_S_KpVp = self.lora_S_KpVp[f"{adapter}_S_KpVp"]
+        lora_S_VpVp = self.lora_S_VpVp[f"{adapter}_S_VpVp"]
+        weight = self.base_layer.weight + delta_weight
+        trace_KpKp_VpVp = torch.trace(weight @ lora_S_KpKp @ weight.T) - (2 * torch.trace(weight @ lora_S_KpVp)) + torch.trace(lora_S_VpVp)
+        return trace_KpKp_VpVp
 
 
 def dispatcher_default(
