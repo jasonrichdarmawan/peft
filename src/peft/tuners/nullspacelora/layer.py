@@ -163,7 +163,7 @@ class NullSpaceLinear(Linear):
         delta_KpKp = delta_weight @ lora_S_KpKp @ delta_weight.T
         return delta_KpKp
 
-    def get_trace_KpKp_VpVp(self, adapter: str) -> torch.Tensor:
+    def get_previous_loss_with_trace(self, adapter: str) -> torch.Tensor:
         delta_weight = self.get_delta_weight(adapter)
         lora_S_KpKp = self.lora_S_KpKp[f"{adapter}_S_KpKp"]
         lora_S_KpVp = self.lora_S_KpVp[f"{adapter}_S_KpVp"]
@@ -175,7 +175,8 @@ class NullSpaceLinear(Linear):
         K = weight.T @ weight # (in_features, in_features)
         # tr(weight @ S_KpKp @ weight.T) = sum((weight.T @ weight).T * S_KpKp)
         # K is symmetric, so K.T = K
-        trace1 = torch.sum(K * lora_S_KpKp)
+        # but, there may be rounding / accumulation errors, causing K.T \neq K
+        trace1 = torch.sum(K.T * lora_S_KpKp)
 
         # weight (out_features, in_features)
         # S_KpVp (in_features, out_features)

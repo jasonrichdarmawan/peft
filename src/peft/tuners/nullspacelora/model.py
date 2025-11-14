@@ -65,12 +65,12 @@ class NullSpaceLoraModel(LoraModel):
                 delta_KpKp[name] = module.get_delta_KpKp(adapter=adapter)
         return delta_KpKp
 
-    def get_trace_KpKp_VpVp(self, adapter: str) -> dict[str, torch.Tensor]:
-        trace_KpKp_VpVp = {}
+    def get_previous_losses_with_trace(self, adapter: str) -> dict[str, torch.Tensor]:
+        trace_dict = {}
         for name, module in self.model.named_modules():
             if isinstance(module, LoraLayer):
-                trace_KpKp_VpVp[name] = module.get_trace_KpKp_VpVp(adapter=adapter)
-        return trace_KpKp_VpVp
+                trace_dict[name] = module.get_previous_loss_with_trace(adapter=adapter)
+        return trace_dict
 
     @staticmethod
     def _create_new_module(lora_config: LoraConfig, adapter_name: str, target: nn.Module, **kwargs):
