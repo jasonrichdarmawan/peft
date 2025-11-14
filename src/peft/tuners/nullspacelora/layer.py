@@ -43,7 +43,7 @@ class NullSpaceLinear(Linear):
         )
         self.lora_second_moment = BufferDict()
         self.nullspace_threshold = nullspace_threshold
-        self.lora_P = BufferDict()
+        self.lora_P_2 = BufferDict()
         self.lora_S_KpKp = BufferDict()
         self.lora_S_KpVp = BufferDict()
         self.lora_S_VpVp = BufferDict()
@@ -53,21 +53,21 @@ class NullSpaceLinear(Linear):
         self.lora_second_moment[f"{adapter_name}_count"] = torch.tensor(
             second_moment["count"], dtype=torch.long, device=second_moment["mom2"].device
         )
-        self.set_lora_P_from_second_moment(adapter_name=adapter_name)
+        self.set_lora_P_2_from_second_moment(adapter_name=adapter_name)
 
-    def set_lora_P_from_second_moment(self, adapter_name: str):
+    def set_lora_P_2_from_second_moment(self, adapter_name: str):
         mom2 = self.lora_second_moment[f"{adapter_name}_mom2"].to(self.lora_A[adapter_name].weight.device)
         count = self.lora_second_moment[f"{adapter_name}_count"].to(self.lora_A[adapter_name].weight.device)
         moment = mom2 / count
         eigenvalues, eigenvectors = torch.linalg.eigh(moment)
         small_eigenvalues_indices = (eigenvalues < self.nullspace_threshold).nonzero(as_tuple=True)[0]
-        projection = eigenvectors[:, small_eigenvalues_indices] @ eigenvectors[:, small_eigenvalues_indices].T
-        self._set_lora_P(projection, adapter_name)
+        P_2 = eigenvectors[:, small_eigenvalues_indices]
+        self._set_lora_P_2(P_2, adapter_name)
 
-    def _set_lora_P(self, lora_P: torch.Tensor, adapter_name: str):
-        if lora_P.shape[0] != self.out_features or lora_P.shape[1] != self.out_features:
-            raise ValueError(f"P matrix shape {self.lora_P.shape} does not match out_features {self.out_features}.")
-        self.lora_P[adapter_name] = lora_P
+    def _set_lora_P_2(self, lora_P_2: torch.Tensor, adapter_name: str):
+        if lora_P_2.shape[0] != self.out_features:
+            raise ValueError(f"P_2 matrix shape {self.lora_P_2.shape} does not match out_features {self.out_features}.")
+        self.lora_P_2[adapter_name] = lora_P_2
 
     def set_lora_S_KpKp(self, S_KpKp: torch.Tensor, S_count: int, adapter_name: str):
         if S_KpKp == None:
@@ -132,7 +132,7 @@ class NullSpaceLinear(Linear):
                 lora_A = self.lora_A[active_adapter]
                 lora_B = self.lora_B[active_adapter]
                 dropout = self.lora_dropout[active_adapter]
-                lora_P = self.lora_P[active_adapter]
+                lora_P_2 = self.lora_P_2[active_adapter]
                 scaling = self.scaling[active_adapter]
                 x = x.to(lora_A.weight.dtype)
 
@@ -140,7 +140,7 @@ class NullSpaceLinear(Linear):
                     # U \Lambda U^T = SVD(K_0 K_0^T)
                     # P = UU^T
                     # So, P^T = P
-                    result = result + (lora_B(lora_A(dropout(x))) @ lora_P) * scaling
+                    result = result + (lora_B(lora_A(dropout(x))) @ lora_P_2 @ lora_P_2.T) * scaling
                 else:
                     raise NotImplementedError("DoRa is not implemented yet.")
 
@@ -151,9 +151,9 @@ class NullSpaceLinear(Linear):
     def get_delta_weight(self, adapter: str) -> torch.Tensor:
         weight_A = self.lora_A[adapter].weight
         weight_B = self.lora_B[adapter].weight
-        P = self.lora_P[adapter]
+        P_2 = self.lora_P_2[adapter]
 
-        output_tensor = transpose(P @ weight_B @ weight_A, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
+        output_tensor = transpose(P_2 @ P_2.T @ weight_B @ weight_A, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
 
         return output_tensor
 
@@ -169,8 +169,29 @@ class NullSpaceLinear(Linear):
         lora_S_KpVp = self.lora_S_KpVp[f"{adapter}_S_KpVp"]
         lora_S_VpVp = self.lora_S_VpVp[f"{adapter}_S_VpVp"]
         weight = self.base_layer.weight + delta_weight
-        trace_KpKp_VpVp = torch.trace(weight @ lora_S_KpKp @ weight.T) - (2 * torch.trace(weight @ lora_S_KpVp)) + torch.trace(lora_S_VpVp)
-        return trace_KpKp_VpVp
+
+        # Use the smaller intermediate: compute weight.T @ weight
+        # and use elementwise dot for trace(W S_KK W^T)
+        K = weight.T @ weight # (in_features, in_features)
+        # tr(weight @ S_KpKp @ weight.T) = sum((weight.T @ weight).T * S_KpKp)
+        # K is symmetric, so K.T = K
+        trace1 = torch.sum(K * lora_S_KpKp)
+
+        # weight (out_features, in_features)
+        # S_KpVp (in_features, out_features)
+        # tr(weight @ S_KpVp) = sum(weight * S_KpVp.T) = sum(weight.T * S_KpVp)
+        # we use the former to save an extra transpose
+        trace2 = 2.0 * torch.sum(weight * lora_S_KpVp.T) # (out_features, in_features)
+
+        trace3 = torch.trace(lora_S_VpVp)
+
+        trace = (trace1 - trace2 + trace3) / self.out_features
+
+        return trace
+        
+        # Alternative way (less efficient):
+        # trace_KpKp_VpVp = ( torch.trace(weight @ lora_S_KpKp @ weight.T) - (2 * torch.trace(weight @ lora_S_KpVp)) + torch.trace(lora_S_VpVp) ) / self.out_features
+        # return trace_KpKp_VpVp
 
 
 def dispatcher_default(
