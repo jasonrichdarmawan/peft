@@ -153,9 +153,21 @@ class NullSpaceLinear(Linear):
         weight_B = self.lora_B[adapter].weight
         P_2 = self.lora_P_2[adapter]
 
-        output_tensor = transpose(P_2 @ P_2.T @ weight_B @ weight_A, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
+        # Low-rank order:
+        # step 1: (d, out) @ (out, r) = (d, r)
+        tmp = torch.matmul(P_2.T, weight_B)  # (d, r)
+        # step 2: (out, d) @ (d, r) = (out, r)
+        tmp = torch.matmul(P_2, tmp)  # (out, r)
+        # step 3: (out, r) @ (r, in) = (out, in)
+        out = torch.matmul(tmp, weight_A)  # (out, in)
 
+        output_tensor = transpose(out, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
         return output_tensor
+
+        # Alternative way (less efficient):
+        # output_tensor = transpose(P_2 @ P_2.T @ weight_B @ weight_A, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
+
+        # return output_tensor
 
     def get_delta_KpKp(self, adapter: str) -> torch.Tensor:
         delta_weight = self.get_delta_weight(adapter)
@@ -170,13 +182,18 @@ class NullSpaceLinear(Linear):
         lora_S_VpVp = self.lora_S_VpVp[f"{adapter}_S_VpVp"]
         weight = self.base_layer.weight + delta_weight
 
-        # Use the smaller intermediate: compute weight.T @ weight
-        # and use elementwise dot for trace(W S_KK W^T)
-        K = weight.T @ weight # (in_features, in_features)
-        # tr(weight @ S_KpKp @ weight.T) = sum((weight.T @ weight).T * S_KpKp)
-        # K is symmetric, so K.T = K
-        # but, there may be rounding / accumulation errors, causing K.T \neq K
-        trace1 = torch.sum(K.T * lora_S_KpKp)
+        # flops identical but peak memory lower
+        if self.in_features >= self.out_features:
+            # Use the smaller intermediate: compute weight.T @ weight
+            # and use elementwise dot for trace(W S_KK W^T)
+            K = weight.T @ weight # (in_features, in_features)
+            # tr(weight @ S_KpKp @ weight.T) = sum((weight.T @ weight).T * S_KpKp)
+            # K is symmetric, so K.T = K
+            # but, there may be rounding / accumulation errors, causing K.T \neq K
+            trace1 = torch.sum(K.T * lora_S_KpKp)
+        else:
+            T = weight @ lora_S_KpKp # (out_features, in_features)
+            trace1 = torch.sum(T * weight)
 
         # weight (out_features, in_features)
         # S_KpVp (in_features, out_features)
