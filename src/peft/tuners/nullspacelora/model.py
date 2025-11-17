@@ -65,7 +65,14 @@ class NullSpaceLoraModel(LoraModel):
                 delta_KpKp[name] = module.get_delta_KpKp(adapter=adapter)
         return delta_KpKp
 
-    def get_previous_losses_with_trace(self, adapter: str) -> dict[str, torch.Tensor]:
+    def get_regularization_losses_with_trace(self, adapter: str) -> dict[str, tuple[torch.Tensor, int]]:
+        trace_dict = {}
+        for name, module in self.model.named_modules():
+            if isinstance(module, LoraLayer):
+                trace_dict[name] = module.get_regularization_loss_with_trace(adapter=adapter)
+        return trace_dict
+
+    def get_previous_losses_with_trace(self, adapter: str) -> dict[str, tuple[torch.Tensor, int]]:
         trace_dict = {}
         for name, module in self.model.named_modules():
             if isinstance(module, LoraLayer):

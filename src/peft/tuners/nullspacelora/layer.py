@@ -169,13 +169,26 @@ class NullSpaceLinear(Linear):
 
         # return output_tensor
 
+    def get_regularization_loss_with_trace(self, adapter: str) -> torch.Tensor:
+        weight_A = self.lora_A[adapter].weight
+        weight_B = self.lora_B[adapter].weight
+        P_2 = self.lora_P_2[adapter]
+
+        Y = torch.matmul(P_2.T, weight_B)  # (d, r)
+        X = torch.matmul(P_2.T, P_2) # (d,,d)
+        M = Y.T @ X @ Y # (r, r)
+        AAt = torch.matmul(weight_A, weight_A.T) # (out, out)
+        norm_sq = torch.sum(AAt * M)  # tr(A A^T M) = sum((A A^T) * M)
+        norm_sq = norm_sq * (self.scaling[adapter] ** 2)
+        return norm_sq, self.out_features * self.in_features
+
     def get_delta_KpKp(self, adapter: str) -> torch.Tensor:
         delta_weight = self.get_delta_weight(adapter)
         lora_S_KpKp = self.lora_S_KpKp[f"{adapter}_S_KpKp"]
         delta_KpKp = delta_weight @ lora_S_KpKp @ delta_weight.T
         return delta_KpKp
 
-    def get_previous_loss_with_trace(self, adapter: str) -> torch.Tensor:
+    def get_previous_loss_with_trace(self, adapter: str) -> tuple[torch.Tensor, int]:
         delta_weight = self.get_delta_weight(adapter)
         lora_S_KpKp = self.lora_S_KpKp[f"{adapter}_S_KpKp"]
         lora_S_KpVp = self.lora_S_KpVp[f"{adapter}_S_KpVp"]
@@ -203,9 +216,9 @@ class NullSpaceLinear(Linear):
 
         trace3 = torch.trace(lora_S_VpVp)
 
-        trace = (trace1 - trace2 + trace3) / self.out_features
+        trace = (trace1 - trace2 + trace3)
 
-        return trace
+        return trace, self.out_features
         
         # Alternative way (less efficient):
         # trace_KpKp_VpVp = ( torch.trace(weight @ lora_S_KpKp @ weight.T) - (2 * torch.trace(weight @ lora_S_KpVp)) + torch.trace(lora_S_VpVp) ) / self.out_features
