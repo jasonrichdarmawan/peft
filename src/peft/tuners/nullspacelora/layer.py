@@ -47,6 +47,7 @@ class NullSpaceLinear(Linear):
         self.lora_S_KpKp = BufferDict()
         self.lora_S_KpVp = BufferDict()
         self.lora_S_VpVp = BufferDict()
+        self.lora_S_count = BufferDict()
 
     def set_lora_second_moment(self, second_moment: dict[str, Any], adapter_name: str):
         self.lora_second_moment[f"{adapter_name}_mom2"] = second_moment["mom2"]
@@ -69,45 +70,45 @@ class NullSpaceLinear(Linear):
             raise ValueError(f"P_2 matrix shape {self.lora_P_2.shape} does not match out_features {self.out_features}.")
         self.lora_P_2[adapter_name] = lora_P_2
 
-    def set_lora_S_KpKp(self, S_KpKp: torch.Tensor, S_count: int, adapter_name: str):
+    def set_lora_S_KpKp(self, S_KpKp: torch.Tensor, adapter_name: str):
         if S_KpKp == None:
-            self.lora_S_KpKp[f"{adapter_name}_S_KpKp"] = torch.zeros(
+            self.lora_S_KpKp[adapter_name] = torch.zeros(
                 self.in_features, self.in_features, device=self.lora_A[adapter_name].weight.device
             )
-            self.lora_S_KpKp[f"{adapter_name}_S_count"] = torch.tensor(1, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
         else:
             if S_KpKp.shape[0] != self.in_features or S_KpKp.shape[1] != self.in_features:
                 raise ValueError(f"S_KpKp matrix shape {S_KpKp.shape} does not match in_features {self.in_features}.")
-            self.lora_S_KpKp[f"{adapter_name}_S_KpKp"] = (S_KpKp / S_count).to(self.lora_A[adapter_name].weight.device)
-            self.lora_S_KpKp[f"{adapter_name}_S_count"] = torch.tensor(S_count, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+            self.lora_S_KpKp[adapter_name] = S_KpKp.to(self.lora_A[adapter_name].weight.device)
 
-    def set_lora_S_KpVp(self, S_KpVp: torch.Tensor, S_count: int, adapter_name: str):
+    def set_lora_S_KpVp(self, S_KpVp: torch.Tensor, adapter_name: str):
         if S_KpVp == None:
-            self.lora_S_KpVp[f"{adapter_name}_S_KpVp"] = torch.zeros(
+            self.lora_S_KpVp[adapter_name] = torch.zeros(
                 self.in_features, self.out_features, device=self.lora_A[adapter_name].weight.device
             )
-            self.lora_S_KpVp[f"{adapter_name}_S_count"] = torch.tensor(1, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
         else:
             if S_KpVp.shape[0] != self.in_features or S_KpVp.shape[1] != self.out_features:
                 raise ValueError(
                     f"S_KpVp matrix shape {S_KpVp.shape} does not match in_features {self.in_features} and out_features {self.out_features}."
                 )
-            self.lora_S_KpVp[f"{adapter_name}_S_KpVp"] = (S_KpVp / S_count).to(self.lora_A[adapter_name].weight.device)
-            self.lora_S_KpVp[f"{adapter_name}_S_count"] = torch.tensor(S_count, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+            self.lora_S_KpVp[adapter_name] = S_KpVp.to(self.lora_A[adapter_name].weight.device)
 
-    def set_lora_S_VpVp(self, S_VpVp: torch.Tensor, S_count: int, adapter_name: str):
+    def set_lora_S_VpVp(self, S_VpVp: torch.Tensor, adapter_name: str):
         if S_VpVp == None:
-            self.lora_S_VpVp[f"{adapter_name}_S_VpVp"] = torch.zeros(
+            self.lora_S_VpVp[adapter_name] = torch.zeros(
                 self.out_features, self.out_features, device=self.lora_A[adapter_name].weight.device
             )
-            self.lora_S_VpVp[f"{adapter_name}_S_count"] = torch.tensor(1, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
         else:
             if S_VpVp.shape[0] != self.out_features or S_VpVp.shape[1] != self.out_features:
                 raise ValueError(
                     f"S_VpVp matrix shape {S_VpVp.shape} does not match out_features {self.out_features}."
                 )
-            self.lora_S_VpVp[f"{adapter_name}_S_VpVp"] = (S_VpVp / S_count).to(self.lora_A[adapter_name].weight.device)
-            self.lora_S_VpVp[f"{adapter_name}_S_count"] = torch.tensor(S_count, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+            self.lora_S_VpVp[adapter_name] = S_VpVp.to(self.lora_A[adapter_name].weight.device)
+
+    def set_lora_S_count(self, S_count: int, adapter_name: str):
+        if S_count is None:
+            self.lora_S_count[adapter_name] = torch.tensor(1, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
+        else:
+            self.lora_S_count[adapter_name] = torch.tensor(S_count, dtype=torch.long, device=self.lora_A[adapter_name].weight.device)
 
     def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         self._check_forward_args(x, *args, **kwargs)
@@ -178,25 +179,27 @@ class NullSpaceLinear(Linear):
         X = torch.matmul(P_2.T, P_2) # (d,,d)
         M = Y.T @ X @ Y # (r, r)
         AAt = torch.matmul(weight_A, weight_A.T) # (out, out)
-        norm_sq = torch.sum(AAt * M)  # tr(A A^T M) = sum((A A^T) * M)
+        norm_sq = torch.sum(AAt.T * M)  # tr(A A^T M) = sum((A A^T) * M)
         norm_sq = norm_sq * (self.scaling[adapter] ** 2)
         return norm_sq, self.out_features * self.in_features
 
     def get_delta_KpKp(self, adapter: str) -> torch.Tensor:
         delta_weight = self.get_delta_weight(adapter)
-        lora_S_KpKp = self.lora_S_KpKp[f"{adapter}_S_KpKp"]
+        lora_S_KpKp = self.lora_S_KpKp[adapter]
         delta_KpKp = delta_weight @ lora_S_KpKp @ delta_weight.T
         return delta_KpKp
 
     def get_previous_loss_with_trace(self, adapter: str) -> tuple[torch.Tensor, int]:
         delta_weight = self.get_delta_weight(adapter)
-        lora_S_KpKp = self.lora_S_KpKp[f"{adapter}_S_KpKp"]
-        lora_S_KpVp = self.lora_S_KpVp[f"{adapter}_S_KpVp"]
-        lora_S_VpVp = self.lora_S_VpVp[f"{adapter}_S_VpVp"]
+        lora_S_KpKp = self.lora_S_KpKp[adapter]
+        lora_S_KpVp = self.lora_S_KpVp[adapter]
+        lora_S_VpVp = self.lora_S_VpVp[adapter]
         weight = self.base_layer.weight + delta_weight
 
+        S_count = self.lora_S_count[adapter]
+
         # flops identical but peak memory lower
-        if self.in_features >= self.out_features:
+        if self.in_features <= self.out_features:
             # Use the smaller intermediate: compute weight.T @ weight
             # and use elementwise dot for trace(W S_KK W^T)
             K = weight.T @ weight # (in_features, in_features)
@@ -218,7 +221,7 @@ class NullSpaceLinear(Linear):
 
         trace = (trace1 - trace2 + trace3)
 
-        return trace, self.out_features
+        return trace, S_count * self.out_features
         
         # Alternative way (less efficient):
         # trace_KpKp_VpVp = ( torch.trace(weight @ lora_S_KpKp @ weight.T) - (2 * torch.trace(weight @ lora_S_KpVp)) + torch.trace(lora_S_VpVp) ) / self.out_features

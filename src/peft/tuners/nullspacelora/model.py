@@ -33,23 +33,29 @@ class NullSpaceLoraModel(LoraModel):
             if hasattr(module, "set_lora_second_moment") and name in second_moment_map:
                 module.set_lora_second_moment(second_moment=second_moment_map[name], adapter_name=adapter_name)
 
-    def set_lora_S_KpKp_map(self, S_KpKp_map: dict[str, torch.Tensor], S_count_map: dict[str, int], adapter_name: str):
+    def set_lora_S_KpKp_map(self, S_KpKp_map: dict[str, torch.Tensor], adapter_name: str):
         # Now inject S_KpKp into all relevant modules
         for name, module in self.model.named_modules():
             if hasattr(module, "lora_S_KpKp"):
-                module.set_lora_S_KpKp(S_KpKp=S_KpKp_map.get(name, None), S_count=S_count_map.get(name, 1), adapter_name=adapter_name)
+                module.set_lora_S_KpKp(S_KpKp=S_KpKp_map.get(name, None), adapter_name=adapter_name)
 
-    def set_lora_S_KpVp_map(self, S_KpVp_map: dict[str, torch.Tensor], S_count_map: dict[str, int], adapter_name: str):
+    def set_lora_S_KpVp_map(self, S_KpVp_map: dict[str, torch.Tensor], adapter_name: str):
         # Now inject S_KpVp into all relevant modules
         for name, module in self.model.named_modules():
             if hasattr(module, "lora_S_KpVp"):
-                module.set_lora_S_KpVp(S_KpVp=S_KpVp_map.get(name, None), S_count=S_count_map.get(name, 1), adapter_name=adapter_name)
+                module.set_lora_S_KpVp(S_KpVp=S_KpVp_map.get(name, None), adapter_name=adapter_name)
 
-    def set_lora_S_VpVp_map(self, S_VpVp_map: dict[str, torch.Tensor], S_count_map: dict[str, int], adapter_name: str):
+    def set_lora_S_VpVp_map(self, S_VpVp_map: dict[str, torch.Tensor], adapter_name: str):
         # Now inject S_VpVp into all relevant modules
         for name, module in self.model.named_modules():
             if hasattr(module, "lora_S_VpVp"):
-                module.set_lora_S_VpVp(S_VpVp=S_VpVp_map.get(name, None), S_count=S_count_map.get(name, 1), adapter_name=adapter_name)
+                module.set_lora_S_VpVp(S_VpVp=S_VpVp_map.get(name, None), adapter_name=adapter_name)
+    
+    def set_lora_S_count_map(self, S_count_map: dict[str, int], adapter_name: str):
+        # Now inject S_count into all relevant modules
+        for name, module in self.model.named_modules():
+            if hasattr(module, "lora_S_count"):
+                module.set_lora_S_count(S_count=S_count_map.get(name, 1), adapter_name=adapter_name)
 
     def get_delta_weights(self, adapter: str) -> dict[str, torch.Tensor]:
         delta_weights = {}
