@@ -66,8 +66,14 @@ class NullSpaceLinear(Linear):
         self._set_lora_P_2(P_2, adapter_name)
 
     def _set_lora_P_2(self, lora_P_2: torch.Tensor, adapter_name: str):
-        if lora_P_2.shape[0] != self.out_features:
-            raise ValueError(f"P_2 matrix shape {self.lora_P_2.shape} does not match out_features {self.out_features}.")
+        # use output statistics
+        # if lora_P_2.shape[0] != self.out_features:
+        #     raise ValueError(f"P_2 matrix shape {self.lora_P_2.shape} does not match out_features {self.out_features}.")
+        
+        # use input statistics
+        if lora_P_2.shape[0] != self.in_features:
+            raise ValueError(f"P_2 matrix shape {lora_P_2.shape} does not match in_features {self.in_features}.")
+        
         self.lora_P_2[adapter_name] = lora_P_2
 
     def set_lora_S_KpKp(self, S_KpKp: torch.Tensor, adapter_name: str):
@@ -141,7 +147,16 @@ class NullSpaceLinear(Linear):
                     # U \Lambda U^T = SVD(K_0 K_0^T)
                     # P = UU^T
                     # So, P^T = P
-                    result = result + (lora_B(lora_A(dropout(x))) @ lora_P_2 @ lora_P_2.T) * scaling
+                    
+                    # use output statistics
+                    # result = result + (lora_B(lora_A(dropout(x))) @ lora_P_2 @ lora_P_2.T) * scaling
+
+                    # use input statistics
+                    # x: (batch, seq, in)
+                    # P_2: (in, k)
+                    # x_proj = x @ P_2 @ P_2.T
+                    x_projected = (x @ lora_P_2) @ lora_P_2.T  # Project input to null space
+                    result = result + (lora_B(lora_A(dropout(x_projected)))) * scaling
                 else:
                     raise NotImplementedError("DoRa is not implemented yet.")
 
@@ -154,32 +169,56 @@ class NullSpaceLinear(Linear):
         weight_B = self.lora_B[adapter].weight
         P_2 = self.lora_P_2[adapter]
 
-        # Low-rank order:
-        # step 1: (d, out) @ (out, r) = (d, r)
-        tmp = torch.matmul(P_2.T, weight_B)  # (d, r)
-        # step 2: (out, d) @ (d, r) = (out, r)
-        tmp = torch.matmul(P_2, tmp)  # (out, r)
-        # step 3: (out, r) @ (r, in) = (out, in)
-        out = torch.matmul(tmp, weight_A)  # (out, in)
+        # use output statistics
+        # # Low-rank order:
+        # # step 1: (d, out) @ (out, r) = (d, r)
+        # tmp = torch.matmul(P_2.T, weight_B)  # (d, r)
+        # # step 2: (out, d) @ (d, r) = (out, r)
+        # tmp = torch.matmul(P_2, tmp)  # (out, r)
+        # # step 3: (out, r) @ (r, in) = (out, in)
+        # out = torch.matmul(tmp, weight_A)  # (out, in)
 
-        output_tensor = transpose(out, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
-        return output_tensor
+        # output_tensor = transpose(out, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
+        # return output_tensor
 
         # Alternative way (less efficient):
         # output_tensor = transpose(P_2 @ P_2.T @ weight_B @ weight_A, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
 
         # return output_tensor
 
+        # use input statistics
+        # Delta W = B @ A @ P @ P^T
+        # B: (out, r)
+        # A: (r, in)
+        # P: (in, k)
+        # 1. A @ P -> (r, k)
+        AP = torch.matmul(weight_A, P_2)  # (r, k)
+        # 2. B @ AP -> (out, k)
+        BAP = torch.matmul(weight_B, AP)  # (out, k)
+        # 3. BAP @ P^T -> (out, in)
+        delta_W = torch.matmul(BAP, P_2.T)  # (out, in)
+        output_tensor = transpose(delta_W, fan_in_fan_out=self.fan_in_fan_out) * self.scaling[adapter]
+        return output_tensor
+
     def get_regularization_loss_with_trace(self, adapter: str) -> torch.Tensor:
         weight_A = self.lora_A[adapter].weight
         weight_B = self.lora_B[adapter].weight
         P_2 = self.lora_P_2[adapter]
 
-        Y = torch.matmul(P_2.T, weight_B)  # (d, r)
-        X = torch.matmul(P_2.T, P_2) # (d,,d)
-        M = Y.T @ X @ Y # (r, r)
-        AAt = torch.matmul(weight_A, weight_A.T) # (out, out)
-        norm_sq = torch.sum(AAt.T * M)  # tr(A A^T M) = sum((A A^T) * M)
+        # use output statistics
+        # Y = torch.matmul(P_2.T, weight_B)  # (d, r)
+        # X = torch.matmul(P_2.T, P_2) # (d, d)
+        # M = Y.T @ X @ Y # (r, r)
+        # AAt = torch.matmul(weight_A, weight_A.T) # (out, out)
+        # norm_sq = torch.sum(AAt.T * M)  # tr(A A^T M) = sum((A A^T) * M)
+        # norm_sq = norm_sq * (self.scaling[adapter] ** 2)
+        # return norm_sq, self.out_features * self.in_features
+
+        # use input statistics
+        # \lVert \Delta W_m \rVert^2_F = tr ( (BAP_2P_2^T)^T (BAP_2P_2^T) )
+        X = torch.matmul(weight_A, P_2) # (r, k)
+        M = torch.matmul(weight_B.T, weight_B)  # (r, r)
+        norm_sq = torch.sum(X * (torch.matmul(M, X)))
         norm_sq = norm_sq * (self.scaling[adapter] ** 2)
         return norm_sq, self.out_features * self.in_features
 
