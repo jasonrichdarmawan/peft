@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
-from typing import Union, Any
+from typing import Union, Any, Optional
 
 from transformers.pytorch_utils import Conv1D
 
 from peft.utils.other import transpose, BufferDict
 from peft.tuners.lora import Linear, Embedding, Conv2d, LoraConfig
-from peft.tuners.tuners_utils import BaseTunerLayer
+from peft.tuners.tuners_utils import BaseTunerLayer, check_adapters_to_merge
 
 import warnings
 
@@ -265,6 +265,70 @@ class NullSpaceLinear(Linear):
         # Alternative way (less efficient):
         # trace_KpKp_VpVp = ( torch.trace(weight @ lora_S_KpKp @ weight.T) - (2 * torch.trace(weight @ lora_S_KpVp)) + torch.trace(lora_S_VpVp) ) / self.out_features
         # return trace_KpKp_VpVp
+
+    def merge(self, safe_merge: bool = False, adapter_names: Optional[list[str]] = None) -> None:
+        """
+        Merge the active adapter weights into the base weights
+
+        Args:
+            safe_merge (`bool`, *optional*):
+                If True, the merge operation will be performed in a copy of the original weights and check for NaNs
+                before merging the weights. This is useful if you want to check if the merge operation will produce
+                NaNs. Defaults to `False`.
+            adapter_names (`list[str]`, *optional*):
+                The list of adapter names that should be merged. If None, all active adapters will be merged. Defaults
+                to `None`.
+        """
+        alpha = 1.0
+        adapter_names = check_adapters_to_merge(self, adapter_names)
+        if not adapter_names:
+            # no adapter to merge
+            return
+
+        for active_adapter in adapter_names:
+            if active_adapter in self.lora_A.keys():
+                base_layer = self.get_base_layer()
+                if safe_merge:
+                    # Note that safe_merge will be slower than the normal merge
+                    # because of the copy operation.
+                    orig_weights = base_layer.weight.data.clone()
+                    delta_weight = self.get_delta_weight(active_adapter)
+                    if not self.use_dora[active_adapter]:
+                        orig_weights = orig_weights + alpha * delta_weight
+                    else:
+                        # handle dora
+                        # since delta_weight already includes scaling, set it to 1 here
+                        weight_norm = self._get_weight_norm(orig_weights, delta_weight, scaling=1).detach()
+                        # We need to cache weight_norm because it has to be based on the original weights. We
+                        # cannot calculate it on the fly based on the merged weights when unmerging because its a
+                        # different value
+                        self._cache_store(f"{active_adapter}-weight_norm", weight_norm)
+                        dora_factor = self.lora_magnitude_vector[active_adapter] / weight_norm
+                        orig_weights = dora_factor.view(-1, 1) * (orig_weights + delta_weight)
+
+                    if not torch.isfinite(orig_weights).all():
+                        raise ValueError(
+                            f"NaNs detected in the merged weights. The adapter {active_adapter} seems to be broken"
+                        )
+
+                    base_layer.weight.data = orig_weights
+                else:
+                    delta_weight = self.get_delta_weight(active_adapter)
+                    if not self.use_dora[active_adapter]:
+                        base_layer.weight.data = base_layer.weight.data + alpha * delta_weight
+                    else:
+                        # handle dora
+                        # since delta_weight already includes scaling, set it to 1 here
+                        weight_norm = self._get_weight_norm(base_layer.weight, delta_weight, scaling=1).detach()
+                        # We need to cache weight_norm because it has to be based on the original weights. We
+                        # cannot calculate it on the fly based on the merged weights when unmerging because its a
+                        # different value
+                        self._cache_store(f"{active_adapter}-weight_norm", weight_norm)
+                        dora_factor = self.lora_magnitude_vector[active_adapter] / weight_norm
+                        new_weight = dora_factor.view(-1, 1) * (base_layer.weight.data + delta_weight)
+                        base_layer.weight.data = new_weight
+
+                self.merged_adapters.append(active_adapter)
 
 
 def dispatcher_default(
